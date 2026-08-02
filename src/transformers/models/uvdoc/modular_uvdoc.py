@@ -235,7 +235,7 @@ class UVDocImageProcessor(TorchvisionBackend):
                           and BGR channel order (suitable for OpenCV visualization)
         """
         image_list = list(original_images)
-        scale = torch.tensor(float(scale), device=prediction.device)
+        scale = torch.full((), float(scale), device=prediction.device)
         results = []
 
         for i, original_image in enumerate(image_list):
@@ -479,8 +479,8 @@ class UVDocPreTrainedModel(PPOCRV5ServerDetPreTrainedModel):
 
     @torch.no_grad()
     def _init_weights(self, module):
-        PreTrainedModel._init_weights(module)
         """Initialize the weights."""
+        PreTrainedModel._init_weights(self, module)
         if isinstance(module, nn.PReLU):
             module.reset_parameters()
 
@@ -535,7 +535,6 @@ class UVDocBackbone(BackboneMixin, UVDocPreTrainedModel):
         pixel_values: torch.FloatTensor,
         **kwargs: Unpack[TransformersKwargs],
     ) -> BackboneOutput:
-        kwargs["output_hidden_states"] = True  # required to extract layers for the stages
         hidden_states = self.resnet(pixel_values)
         outputs = self.bridge(hidden_states, **kwargs)
 

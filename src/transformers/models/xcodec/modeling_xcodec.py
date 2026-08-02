@@ -24,7 +24,13 @@ import torch.nn.functional as F
 from ... import initialization as init
 from ...audio_utils import conv1d_output_length
 from ...modeling_utils import PreTrainedAudioTokenizerBase
-from ...utils import ModelOutput, auto_docstring
+from ...processing_utils import Unpack
+from ...utils import (
+    ModelOutput,
+    TransformersKwargs,
+    auto_docstring,
+    can_return_tuple,
+)
 from ..auto import AutoModel
 from .configuration_xcodec import XcodecConfig
 
@@ -308,7 +314,7 @@ class XcodecResidualVectorQuantization(nn.Module):
 
     def decode(self, codes: torch.Tensor) -> torch.Tensor:
         """Decode the given codes to their quantized representation."""
-        quantized_out = torch.tensor(0.0, device=codes.device)
+        quantized_out = torch.full((), 0.0, device=codes.device)
         for i, indices in enumerate(codes):
             quantizer = self.quantizers[i]
             quantized = quantizer.decode(indices)
@@ -561,12 +567,13 @@ class XcodecModel(XcodecPreTrainedModel):
         return XcodecDecoderOutput(audio_values)
 
     @auto_docstring
+    @can_return_tuple
     def forward(
         self,
         input_values: torch.Tensor,
         audio_codes: torch.Tensor | None = None,
         bandwidth: float | None = None,
-        return_dict: bool | None = None,
+        **kwargs: Unpack[TransformersKwargs],
     ) -> tuple[torch.Tensor, torch.Tensor] | XcodecOutput:
         r"""
         input_values (`torch.FloatTensor` of shape `(batch_size, channels, num_samples)`):
@@ -577,8 +584,6 @@ class XcodecModel(XcodecPreTrainedModel):
             Target bandwidth in kbps. Must be one of `config.target_bandwidths`. Defaults to the highest available bandwidth.
         bandwidth (`float`, *optional*):
             Target bandwidth in kbps. Must be one of `config.target_bandwidths`. Defaults to the highest available bandwidth.
-        return_dict (`bool`, *optional*):
-            Whether to return a [`XcodecOutput`] instead of a plain tuple.
 
         Returns:
             `XcodecOutput` or tuple `(audio_codes, audio_values)`:
@@ -606,16 +611,12 @@ class XcodecModel(XcodecPreTrainedModel):
         >>> audio_values = outputs.audio_values
         ```
         """
-        return_dict = return_dict if return_dict is not None else self.config.return_dict
         length = input_values.shape[-1]
 
         if audio_codes is None:
             audio_codes = self.encode(input_values, bandwidth, return_dict=False)
 
-        audio_values = self.decode(audio_codes, return_dict=return_dict)[0][..., :length]
-
-        if not return_dict:
-            return (audio_codes, audio_values)
+        audio_values = self.decode(audio_codes, return_dict=True)[0][..., :length]
 
         return XcodecOutput(audio_codes=audio_codes, audio_values=audio_values)
 

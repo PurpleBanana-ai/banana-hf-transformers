@@ -52,6 +52,7 @@ limitations under the License.
 		<b>العربية</b> |
         <a href="https://github.com/huggingface/transformers/blob/main/i18n/README_ur.md">اردو</a> |
         <a href="https://github.com/huggingface/transformers/blob/main/i18n/README_bn.md">বাংলা</a> |
+        <a href="https://github.com/huggingface/transformers/blob/main/i18n/README_tr.md">Türkçe</a> |
     </p>
 </h4>
 
@@ -247,7 +248,7 @@ limitations under the License.
 
 ### باستخدام pip
 
-تم اختبار هذا المستودع على Python 3.10+ و PyTorch 2.4+.
+تم اختبار هذا المستودع على Python 3.10+ و PyTorch 2.5+.
 
 يجب تثبيت 🤗 Transformers في [بيئة افتراضية](https://docs.python.org/3/library/venv.html). إذا كنت غير معتاد على البيئات الافتراضية Python، فراجع [دليل المستخدم](https://packaging.python.org/guides/installing-using-pip-and-virtual-environments/).
 

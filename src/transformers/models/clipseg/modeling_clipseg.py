@@ -82,7 +82,8 @@ class CLIPSegDecoderOutput(ModelOutput):
         Classification scores for each pixel.
     hidden_states (`tuple(torch.FloatTensor)`, *optional*,):
         Hidden-states of the model at the output of each layer plus the optional initial embedding outputs.
-        Rreturned when `output_hidden_states=True` is passed or when `config.output_hidden_states=True`
+
+        Returned when `output_hidden_states=True` is passed or when `config.output_hidden_states=True`
     attentions (`tuple(torch.FloatTensor)`, *optional*):
         Attentions weights after the attention softmax, used to compute the weighted average in the self-attention
         heads. Returned when `output_attentions=True` is passed or when `config.output_attentions=True`
@@ -431,6 +432,7 @@ class CLIPSegPreTrainedModel(PreTrainedModel):
     @torch.no_grad()
     def _init_weights(self, module):
         """Initialize the weights"""
+        super()._init_weights(module)
         factor = self.config.initializer_factor
         if isinstance(module, CLIPSegTextEmbeddings):
             init.normal_(module.token_embedding.weight, mean=0.0, std=factor * 0.02)
@@ -462,12 +464,6 @@ class CLIPSegPreTrainedModel(PreTrainedModel):
                 module.visual_projection.weight,
                 std=module.vision_embed_dim**-0.5 * factor,
             )
-
-        if isinstance(module, nn.LayerNorm):
-            init.zeros_(module.bias)
-            init.ones_(module.weight)
-        if isinstance(module, nn.Linear) and module.bias is not None:
-            init.zeros_(module.bias)
 
 
 class CLIPSegEncoder(nn.Module):

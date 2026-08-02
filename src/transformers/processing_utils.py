@@ -24,6 +24,7 @@ import os
 import re
 import sys
 import typing
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypedDict, TypeVar, Union
@@ -410,6 +411,9 @@ class AudioKwargs(TypedDict, total=False):
             If set, will return tensors of a particular framework. Acceptable values are:
             - `'pt'`: Return PyTorch `torch.Tensor` objects.
             - `'np'`: Return NumPy `np.ndarray` objects.
+        load_audio_backend (`str`, *optional*):
+            Backend used by [`~audio_utils.load_audio`] to decode/resample audio referenced by URL/path
+            in `apply_chat_template`. One of `"auto"`, `"torchcodec"`, `"librosa"`, `"torchaudio"`.
     """
 
     sampling_rate: Annotated[int | None, positive_int()]
@@ -420,6 +424,7 @@ class AudioKwargs(TypedDict, total=False):
     pad_to_multiple_of: Annotated[int | None, positive_int()]
     return_attention_mask: bool | None
     return_tensors: Annotated[str | TensorType | None, tensor_type_validator()]
+    load_audio_backend: str | None
 
 
 class ProcessingKwargs(TypedDict, total=False):
@@ -719,7 +724,7 @@ class ProcessorMixin(PushToHubMixin):
             if isinstance(text, str):
                 text = [text]
             # avoid in-place updates on text
-            text = text.copy()
+            text = list(text).copy()
 
         if audio is not None and hasattr(self, "feature_extractor"):
             sampling_rate = kwargs.get("sampling_rate", self.feature_extractor.sampling_rate)
@@ -762,7 +767,7 @@ class ProcessorMixin(PushToHubMixin):
             # Some processors use nested struct, we need to flatten back if needed
             images = make_flat_list_of_images(images)
             for idx in range(len(images)):
-                replacement_text = self.replace_image_token(processed_images, image_idx=idx)
+                replacement_text = self.replace_image_token(processed_images, image_idx=idx, **kwargs)
                 image_replacements.append(replacement_text)
         return processed_images, image_replacements
 
@@ -773,7 +778,7 @@ class ProcessorMixin(PushToHubMixin):
         if getattr(self, "video_token", None) is not None:
             videos = make_batched_videos(videos)
             for idx in range(len(videos)):
-                replacement_text = self.replace_video_token(processed_videos, video_idx=idx)
+                replacement_text = self.replace_video_token(processed_videos, video_idx=idx, **kwargs)
                 video_replacements.append(replacement_text)
 
         return processed_videos, video_replacements
@@ -784,19 +789,19 @@ class ProcessorMixin(PushToHubMixin):
         audio_replacements = []
         if getattr(self, "audio_token", None) is not None:
             for idx in range(len(audio)):
-                replacement_text = self.replace_audio_token(processed_audio, audio_idx=idx)
+                replacement_text = self.replace_audio_token(processed_audio, audio_idx=idx, **kwargs)
                 audio_replacements.append(replacement_text)
 
         return processed_audio, audio_replacements
 
     # To be overriden by each model's processor if they need to add placeholder tokens
-    def replace_image_token(self, image_inputs: dict, image_idx: int) -> str:
+    def replace_image_token(self, image_inputs: dict, image_idx: int, **kwargs) -> str:
         raise NotImplementedError
 
-    def replace_video_token(self, video_inputs: dict, video_idx: int) -> str:
+    def replace_video_token(self, video_inputs: dict, video_idx: int, **kwargs) -> str:
         raise NotImplementedError
 
-    def replace_audio_token(self, audio_inputs: dict, audio_idx: int) -> str:
+    def replace_audio_token(self, audio_inputs: dict, audio_idx: int, **kwargs) -> str:
         raise NotImplementedError
 
     def get_text_with_replacements(
@@ -873,11 +878,15 @@ class ProcessorMixin(PushToHubMixin):
         batch_replacement_offsets = []
         for batch_idx in range(len(text)):
             last = 0
+            offset = 0
             replacement_offsets = []
             expanded_sample = []
             for m in re.finditer(regex_special_mm_tokens, text[batch_idx]):
                 start, end = m.span()
                 expanded_sample.append(text[batch_idx][last:start])
+
+                # adjust spans using running offset if one sample has several MM data associated
+                start_with_offset = start + offset
 
                 mm_type = m.lastgroup
                 replacement_text = next(replacements_iters[mm_type])
@@ -885,12 +894,14 @@ class ProcessorMixin(PushToHubMixin):
                     {
                         "type": mm_type,
                         "span": (start, end),
-                        "new_span": (start, start + len(replacement_text)),
+                        "new_span": (start_with_offset, start_with_offset + len(replacement_text)),
                         "text": m.group(),
                         "replacement": replacement_text,
                     }
                 )
                 expanded_sample.append(replacement_text)
+                # update the offsets and the last position
+                offset += len(replacement_text) - (end - start)
                 last = end
 
             expanded_sample.append(text[batch_idx][last:])
@@ -919,6 +930,9 @@ class ProcessorMixin(PushToHubMixin):
         """
         mm_token_type_ids = []
         for tokenizer_input in input_ids:
+            # Convert tensor rows to a list so `np.array` avoids NumPy 2.0's `__array__` copy-keyword deprecation.
+            if not isinstance(tokenizer_input, list):
+                tokenizer_input = tokenizer_input.tolist()
             tokenizer_input = np.array(tokenizer_input)
             mm_token_types = np.zeros_like(tokenizer_input)
             mm_token_types[np.isin(tokenizer_input, self.image_token_ids)] = 1
@@ -941,15 +955,33 @@ class ProcessorMixin(PushToHubMixin):
     # These values are used to build `mm_token_type_ids`
     @property
     def image_token_ids(self) -> list[int | None]:
+        if _image_token_ids := getattr(self, "_image_token_ids", None):
+            return _image_token_ids
         return [getattr(self, "image_token_id", None)]
+
+    @image_token_ids.setter
+    def image_token_ids(self, value: list[int | None]):
+        setattr(self, "_image_token_ids", value)
 
     @property
     def video_token_ids(self) -> list[int | None]:
+        if _video_token_ids := getattr(self, "_video_token_ids", None):
+            return _video_token_ids
         return [getattr(self, "video_token_id", None)]
+
+    @video_token_ids.setter
+    def video_token_ids(self, value: list[int | None]):
+        setattr(self, "_video_token_ids", value)
 
     @property
     def audio_token_ids(self) -> list[int | None]:
+        if _audio_token_ids := getattr(self, "_audio_token_ids", None):
+            return _audio_token_ids
         return [getattr(self, "audio_token_id", None)]
+
+    @audio_token_ids.setter
+    def audio_token_ids(self, value: list[int | None]):
+        setattr(self, "_audio_token_ids", value)
 
     def check_argument_for_proper_class(self, argument_name, argument):
         """
@@ -1755,9 +1787,20 @@ class ProcessorMixin(PushToHubMixin):
         else:
             # Additional tokenizer: load from subfolder (e.g., "decoder_tokenizer")
             tokenizer_subfolder = os.path.join(subfolder, sub_processor_type) if subfolder else sub_processor_type
-            tokenizer = auto_processor_class.from_pretrained(
-                pretrained_model_name_or_path, subfolder=tokenizer_subfolder, **kwargs
-            )
+            try:
+                tokenizer = auto_processor_class.from_pretrained(
+                    pretrained_model_name_or_path, subfolder=tokenizer_subfolder, **kwargs
+                )
+            except (OSError, ValueError):
+                fallback_folder = "the root directory" if not subfolder else f"subfolder `{subfolder}`"
+                logger.warning(
+                    f"Could not load tokenizer from subfolder `{tokenizer_subfolder}`. "
+                    f"Falling back to loading from {fallback_folder}. "
+                    f"This behavior is deprecated and will be removed in a future version."
+                )
+                tokenizer = auto_processor_class.from_pretrained(
+                    pretrained_model_name_or_path, subfolder=subfolder, **kwargs
+                )
         return tokenizer
 
     @classmethod
@@ -2034,6 +2077,11 @@ class ProcessorMixin(PushToHubMixin):
             else:
                 sampling_rate = 16_000
 
+        load_audio_backend = kwargs.get("load_audio_backend", processor_kwargs.get("load_audio_backend"))
+        if load_audio_backend is None:
+            default_audio_kwargs = self.valid_processor_kwargs._defaults.get("audio_kwargs", {})
+            load_audio_backend = default_audio_kwargs.get("load_audio_backend", "auto")
+
         if isinstance(conversation, (list, tuple)) and (
             isinstance(conversation[0], (list, tuple)) or hasattr(conversation[0], "content")
         ):
@@ -2096,13 +2144,17 @@ class ProcessorMixin(PushToHubMixin):
                     # Audio models do not accept nested list of audios (yet!) so we construct a flat input audio list
                     if not load_audio_from_video:
                         for fname in audio_fnames:
-                            batch_audios.append(load_audio(fname, sampling_rate=sampling_rate))
+                            batch_audios.append(
+                                load_audio(fname, sampling_rate=sampling_rate, backend=load_audio_backend)
+                            )
                     else:
                         for fname in video_fnames:
                             # This updates the template in-place and adds audio entry
                             # to ensure `audio` token is added by jinja
                             message["content"].append({"type": "audio"})
-                            batch_audios.append(load_audio(fname, sampling_rate=sampling_rate))
+                            batch_audios.append(
+                                load_audio(fname, sampling_rate=sampling_rate, backend=load_audio_backend)
+                            )
 
                 # Currently all processors can accept nested list of batches, but not flat list of visuals
                 # So we'll make a batched list of images and let the processor handle it
@@ -2192,25 +2244,37 @@ class ProcessorMixin(PushToHubMixin):
 
     def parse_response(
         self,
-        response: "str | list[str | int | list[int]] | np.ndarray | torch.Tensor",
-        schema: list | dict | None = None,
+        response: "str | list[int] | list[str] | list[list[int]] | np.ndarray | torch.Tensor",
+        schema: dict | None = None,
+        *,
+        prefix: "str | list[int] | list[str] | list[list[int]] | np.ndarray | torch.Tensor | None" = None,
+        tools: list[dict | Callable] | None = None,
     ):
         """
         Converts an output string created by generating text from a model into a parsed message dictionary.
-        This method is intended for use with chat models, and will read the tokenizer's `response_schema` attribute to
-        control parsing, although this can be overridden by passing a `response_schema` argument directly.
+        This method is intended for use with chat models, and will read the tokenizer's `response_template`
+        attribute to control parsing, unless a `schema` argument is passed directly.
+
+        Accepts either a single sequence (returning a single message `dict`) or a batch (returning a `list` of
+        message dicts, one per item).
 
         Args:
-            response (`str`):
-                The output string generated by the model. This can be either a decoded string or list of strings,
-                or token IDs as a list/array.
-            schema (`Union[list, dict]`, *optional*):
-                A response schema that indicates the expected output format and how parsing should be performed.
-                If not provided, the tokenizer's `response_schema` attribute will be used.
+            response (`str`, token ids, 1D/2D tensor, or a list of these):
+                The output generated by the model, either decoded text or token ids, as a single sequence or a
+                batch.
+            schema (`dict`, *optional*):
+                A response template. If not provided, the tokenizer's `response_template` attribute is used.
+            prefix (`str`, token ids, 1D/2D tensor, or a list of these):
+                The prompt that came before generation. Many chat templates pre-write part of the message, so
+                this is needed to parse correctly. For a batched `response`, pass either a single prefix
+                (broadcast to every item) or one prefix per item. Only supported with new-style templates.
+            tools (`list[Union[Dict, Callable]]`, *optional*):
+                Tools available to the model, in the same format as `apply_chat_template` accepts.
+                Tool-call arguments are cast using the calling tool's JSON schema.
         """
         if not hasattr(self, "tokenizer"):
             raise ValueError("Can't use parse_response on a processor class without a tokenizer!")
-        return self.tokenizer.parse_response(response, schema)
+        return self.tokenizer.parse_response(response, schema, prefix=prefix, tools=tools)
 
     def post_process_multimodal_output(
         self, generated_outputs, skip_special_tokens=True, generation_mode=None, **kwargs
@@ -2264,11 +2328,14 @@ class ProcessorMixin(PushToHubMixin):
         Checks that number of special tokens in text and processed text is same. The count can be different
         if tokenized text was truncated, leading to issues in model code.
         """
+        input_ids = text_inputs["input_ids"]
+        if hasattr(input_ids, "tolist"):
+            input_ids = input_ids.tolist()
         for modality in modalities:
             token_str = getattr(self, f"{modality}_token", None)
             token_id = getattr(self, f"{modality}_token_id", None)
             if token_str is not None and token_id is not None:
-                ids_count = [list(ids).count(token_id) for ids in text_inputs["input_ids"]]
+                ids_count = [list(ids).count(token_id) for ids in input_ids]
                 text_count = [sample.count(token_str) for sample in text]
 
                 if ids_count != text_count:
@@ -2283,3 +2350,36 @@ if ProcessorMixin.push_to_hub.__doc__ is not None:
     ProcessorMixin.push_to_hub.__doc__ = ProcessorMixin.push_to_hub.__doc__.format(
         object="processor", object_class="AutoProcessor", object_files="processor files"
     )
+
+
+def prepare_prompt_input(
+    inputs: str | list[str] | None,
+    batch_size: int,
+    input_name: str = "inputs",
+) -> list[str | None]:
+    """
+    Normalize a string, list of strings, or ``None`` into a list of length ``batch_size``.
+
+    Args:
+        inputs (`str`, `list[str]`, or `None`):
+            The input to normalize. A single string is broadcast to all batch items; a list must
+            match ``batch_size`` exactly; ``None`` produces a list of ``None`` values.
+        batch_size (`int`):
+            Expected length of the output list.
+        input_name (`str`, *optional*, defaults to `"inputs"`):
+            Name used in error messages to identify the argument.
+
+    Returns:
+        `list[str | None]`: A list of length ``batch_size``.
+    """
+    if inputs is None:
+        return [None] * batch_size
+    if isinstance(inputs, str):
+        return [inputs] * batch_size
+    if isinstance(inputs, (list, tuple)):
+        if len(inputs) != batch_size:
+            raise ValueError(
+                f"Received {len(inputs)} {input_name} for {batch_size} audio sample(s); counts must match."
+            )
+        return list(inputs)
+    raise TypeError(f"`{input_name}` must be a string, a sequence of strings, or `None`.")

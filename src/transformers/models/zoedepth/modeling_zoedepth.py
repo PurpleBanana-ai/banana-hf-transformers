@@ -414,8 +414,8 @@ class LogBinomialSoftmax(nn.Module):
         if probabilities.ndim == 3:
             probabilities = probabilities.unsqueeze(1)  # make it (batch_size, num_channels, height, width)
 
-        one_minus_probabilities = torch.clamp(1 - probabilities, eps, 1)
-        probabilities = torch.clamp(probabilities, eps, 1)
+        one_minus_probabilities = (1 - probabilities).clamp(min=eps, max=1.0)
+        probabilities = probabilities.clamp(min=eps, max=1.0)
         y = (
             log_binom(self.k_minus_1, self.k_idx)
             + self.k_idx * torch.log(probabilities)
@@ -914,7 +914,7 @@ class ZoeDepthPatchTransformerEncoder(nn.Module):
         """
         position = torch.arange(0, sequence_length, dtype=dtype, device=device).unsqueeze(1)
         index = torch.arange(0, embedding_dim, 2, dtype=dtype, device=device).unsqueeze(0)
-        div_term = torch.exp(index * (-torch.log(torch.tensor(10000.0, device=device)) / embedding_dim))
+        div_term = torch.exp(index * (-torch.log(torch.full((), 10000.0, device=device)) / embedding_dim))
         pos_encoding = position * div_term
         pos_encoding = torch.cat([torch.sin(pos_encoding), torch.cos(pos_encoding)], dim=1)
         pos_encoding = pos_encoding.unsqueeze(dim=0).repeat(batch_size, 1, 1)

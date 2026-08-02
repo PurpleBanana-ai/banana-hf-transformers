@@ -83,6 +83,16 @@ def _is_package_available(pkg_name: str, return_version: bool = False) -> tuple[
         return package_exists, None
 
 
+def maybe_import_error(message: str, *, raise_error: bool) -> bool:
+    """Report an unmet dependency precondition: raise `ImportError(message)` when `raise_error`, else
+    return `False`. Lets an `is_*_available` / `is_*_loadable` check read as a flat
+    `if unmet: return maybe_import_error(msg, ...)` — a bool for callers probing availability, the specific
+    error for callers that want to fail loudly (`raise_error=True`)."""
+    if raise_error:
+        raise ImportError(message)
+    return False
+
+
 def resolve_internal_import(module: ModuleType | None, chained_path: str) -> Callable | ModuleType | None:
     """
     Check if a given `module` has an internal import path as defined by the `chained_path`.
@@ -141,7 +151,9 @@ TORCHAO_MIN_VERSION = "0.15.0"
 COMPRESSED_TENSORS_MIN_VERSION = "0.15.0"
 AUTOROUND_MIN_VERSION = "0.5.0"
 TRITON_MIN_VERSION = "1.0.0"
-KERNELS_MIN_VERSION = "0.10.2"
+KERNELS_MIN_VERSION = "0.16.0"
+KERNELS_MAX_VERSION = "0.17.0"
+MISTRAL_COMMON_MIN_VERSION = "1.11.5"
 
 
 @lru_cache
@@ -149,9 +161,9 @@ def is_torch_available() -> bool:
     try:
         is_available, torch_version = _is_package_available("torch", return_version=True)
         parsed_version = version.parse(torch_version)
-        if is_available and parsed_version < version.parse("2.4.0"):
-            logger.warning_once(f"Disabling PyTorch because PyTorch >= 2.4 is required but found {torch_version}")
-        return is_available and version.parse(torch_version) >= version.parse("2.4.0")
+        if is_available and parsed_version < version.parse("2.5.0"):
+            logger.warning_once(f"Disabling PyTorch because PyTorch >= 2.5 is required but found {torch_version}")
+        return is_available and version.parse(torch_version) >= version.parse("2.5.0")
     except packaging.version.InvalidVersion:
         return False
 
@@ -214,6 +226,15 @@ def is_torch_cuda_available() -> bool:
 
 
 @lru_cache
+def is_torch_distributed_available() -> bool:
+    if not is_torch_available():
+        return False
+    import torch
+
+    return torch.distributed.is_available()
+
+
+@lru_cache
 def is_cuda_platform() -> bool:
     if is_torch_available():
         import torch
@@ -224,13 +245,21 @@ def is_cuda_platform() -> bool:
 
 @lru_cache
 def get_cuda_runtime_version() -> tuple[int, int]:
-    """Return the CUDA runtime version as (major, minor).
+    """Deprecated. Return the CUDA runtime version as (major, minor).
+
+    Deprecated in favor of ``torch.version.cuda`` for the CUDA runtime version.
 
     Prefers a direct query of ``cudaRuntimeGetVersion`` via ``libcudart.so``. If that's
     not on the system loader path (common with pip-installed torch that bundles its own
     CUDA runtime), falls back to ``torch.version.cuda`` — which equals the bundled
     runtime's version for pip wheels. Returns ``(0, 0)`` for CPU-only torch.
     """
+    warnings.warn(
+        "`get_cuda_runtime_version` is deprecated and will be removed in v5.16. "
+        "Use `torch.version.cuda` for the CUDA runtime version.",
+        FutureWarning,
+        stacklevel=2,
+    )
     import ctypes
 
     try:
@@ -681,9 +710,14 @@ def is_kenlm_available() -> bool:
 
 
 @lru_cache
-def is_kernels_available(MIN_VERSION: str = KERNELS_MIN_VERSION) -> bool:
+def is_kernels_available(MIN_VERSION: str = KERNELS_MIN_VERSION, MAX_VERSION: str = KERNELS_MAX_VERSION) -> bool:
     is_available, kernels_version = _is_package_available("kernels", return_version=True)
-    return is_available and version.parse(kernels_version) >= version.parse(MIN_VERSION)
+    viable_version = False
+    if kernels_version != "N/A":
+        viable_version = version.parse(kernels_version) >= version.parse(MIN_VERSION) and version.parse(
+            kernels_version
+        ) < version.parse(MAX_VERSION)
+    return is_available and viable_version
 
 
 @lru_cache
@@ -742,6 +776,14 @@ def is_torchvision_v2_available() -> bool:
 
 
 @lru_cache
+def is_torchvision_greater_or_equal(library_version: str) -> bool:
+    if not is_torchvision_available():
+        return False
+    _, torchvision_version = _is_package_available("torchvision", return_version=True)
+    return version.parse(torchvision_version) >= version.parse(library_version)
+
+
+@lru_cache
 def is_galore_torch_available() -> bool:
     return _is_package_available("galore_torch")[0]
 
@@ -780,6 +822,16 @@ def is_pyctcdecode_available() -> bool:
 @lru_cache
 def is_librosa_available() -> bool:
     return _is_package_available("librosa")[0]
+
+
+@lru_cache
+def is_nagisa_available() -> bool:
+    return _is_package_available("nagisa")[0]
+
+
+@lru_cache
+def is_soynlp_available() -> bool:
+    return _is_package_available("soynlp")[0]
 
 
 @lru_cache
@@ -860,6 +912,18 @@ def is_peft_available() -> bool:
 
 
 @lru_cache
+def is_peft_greater_or_equal(library_version: str, accept_dev: bool = False) -> bool:
+    is_available, peft_version = _is_package_available("peft", return_version=True)
+    if not is_available:
+        return False
+
+    if accept_dev:
+        return version.parse(version.parse(peft_version).base_version) >= version.parse(library_version)
+    else:
+        return version.parse(peft_version) >= version.parse(library_version)
+
+
+@lru_cache
 def is_bs4_available() -> bool:
     return _is_package_available("bs4")[0]
 
@@ -872,6 +936,21 @@ def is_coloredlogs_available() -> bool:
 @lru_cache
 def is_onnx_available() -> bool:
     return _is_package_available("onnx")[0]
+
+
+@lru_cache
+def is_onnxscript_available() -> bool:
+    return _is_package_available("onnxscript")[0]
+
+
+@lru_cache
+def is_onnxruntime_available() -> bool:
+    return _is_package_available("onnxruntime")[0] or _is_package_available("onnxruntime-gpu")[0]
+
+
+@lru_cache
+def is_executorch_available() -> bool:
+    return _is_package_available("executorch")[0]
 
 
 @lru_cache
@@ -985,32 +1064,57 @@ def is_bitsandbytes_available(min_version: str = BITSANDBYTES_MIN_VERSION) -> bo
 
 
 @lru_cache
-def is_flash_attn_2_available() -> bool:
+def is_flash_attn_2_available(kernels_fallback_ok: bool = False) -> bool:
     is_available, flash_attn_version = _is_package_available("flash_attn", return_version=True)
     # FA4 is also distributed under "flash_attn", hence we need to check the naming here
     is_available = is_available and "flash-attn" in [
         pkg.replace("_", "-") for pkg in PACKAGE_DISTRIBUTION_MAPPING.get("flash_attn", [])
     ]
 
-    if not is_available or not (is_torch_cuda_available() or is_torch_mlu_available()):
-        return False
-
     # Only allow versions >= 2.3.3 to avoid very old legacy workarounds that are now 2+ years old
-    try:
-        return version.parse(flash_attn_version) >= version.parse("2.3.3")
-    except packaging.version.InvalidVersion:
-        return False
+    if is_available and (is_torch_cuda_available() or is_torch_mlu_available()):
+        try:
+            return version.parse(flash_attn_version) >= version.parse("2.3.3")
+        except packaging.version.InvalidVersion:
+            return False
+
+    # If the kernels fallback is allowed, check if it is available
+    if kernels_fallback_ok and is_kernels_available():
+        try:
+            from kernels import get_kernel
+
+            from transformers.modeling_flash_attention_utils import FLASH_ATTN_KERNEL_FALLBACK
+
+            get_kernel(FLASH_ATTN_KERNEL_FALLBACK["flash_attention_2"], version=1)
+            return True
+        except Exception:  # noqa: S110  # we don't care about the Exception here: we just want to check availability
+            pass
+    return False
 
 
 @lru_cache
-def is_flash_attn_3_available() -> bool:
+def is_flash_attn_3_available(kernels_fallback_ok: bool = False) -> bool:
     # Universally available under `flash_attn_interface`
     is_available = _is_package_available("flash_attn_interface")[0]
     # Resolving and ensuring the proper name of FA3 being associated
     is_available = is_available and "flash-attn-3" in [
         pkg.replace("_", "-") for pkg in PACKAGE_DISTRIBUTION_MAPPING.get("flash_attn_interface", [])
     ]
-    return is_available and is_torch_cuda_available()
+    if is_available and is_torch_cuda_available():
+        return True
+
+    # If the kernels fallback is allowed, check if it is available
+    if kernels_fallback_ok and is_kernels_available():
+        try:
+            from kernels import get_kernel
+
+            from transformers.modeling_flash_attention_utils import FLASH_ATTN_KERNEL_FALLBACK
+
+            get_kernel(FLASH_ATTN_KERNEL_FALLBACK["flash_attention_3"], version=1)
+            return True
+        except Exception:  # noqa: S110  # we don't care about the Exception here: we just want to check availability
+            pass
+    return False
 
 
 @lru_cache
@@ -1155,7 +1259,8 @@ def is_optimum_quanto_available():
 
 @lru_cache
 def is_quark_available() -> bool:
-    return _is_package_available("quark")[0]
+    is_available, quark_version = _is_package_available("quark", return_version=True)
+    return is_available and version.parse(quark_version) >= version.parse("0.12")
 
 
 @lru_cache
@@ -1337,11 +1442,6 @@ def is_jinja_available() -> bool:
 
 
 @lru_cache
-def is_jmespath_available() -> bool:
-    return _is_package_available("jmespath")[0]
-
-
-@lru_cache
 def is_mlx_available() -> bool:
     return _is_package_available("mlx")[0]
 
@@ -1375,8 +1475,11 @@ def is_matplotlib_available() -> bool:
 
 
 @lru_cache
-def is_mistral_common_available() -> bool:
-    return is_vision_available() and _is_package_available("mistral_common")[0]
+def is_mistral_common_available(min_version: str = MISTRAL_COMMON_MIN_VERSION) -> bool:
+    is_available, mistral_common_version = _is_package_available("mistral_common", return_version=True)
+    return (
+        is_vision_available() and is_available and version.parse(mistral_common_version) >= version.parse(min_version)
+    )
 
 
 @lru_cache
@@ -1946,6 +2049,13 @@ Please note that you may need to restart your runtime after installation.
 """
 
 # docstyle-ignore
+SOUNDFILE_IMPORT_ERROR = """
+{0} requires the soundfile library. But that was not found in your environment. You can install it with pip:
+`pip install soundfile`
+Please note that you may need to restart your runtime after installation.
+"""
+
+# docstyle-ignore
 PRETTY_MIDI_IMPORT_ERROR = """
 {0} requires the pretty_midi library. But that was not found in your environment. You can install them with pip:
 `pip install pretty_midi`
@@ -2000,6 +2110,7 @@ BACKENDS_MAPPING = OrderedDict(
         ("pretty_midi", (is_pretty_midi_available, PRETTY_MIDI_IMPORT_ERROR)),
         ("levenshtein", (is_levenshtein_available, LEVENSHTEIN_IMPORT_ERROR)),
         ("librosa", (is_librosa_available, LIBROSA_IMPORT_ERROR)),
+        ("soundfile", (is_soundfile_available, SOUNDFILE_IMPORT_ERROR)),
         ("protobuf", (is_protobuf_available, PROTOBUF_IMPORT_ERROR)),
         ("pyctcdecode", (is_pyctcdecode_available, PYCTCDECODE_IMPORT_ERROR)),
         ("pytesseract", (is_pytesseract_available, PYTESSERACT_IMPORT_ERROR)),
@@ -2631,6 +2742,8 @@ BASE_FILE_REQUIREMENTS = {
     ),
     lambda name, content: "image_processing_" in name: ("vision",),
     lambda name, content: "video_processing_" in name: ("vision", "torch", "torchvision"),
+    # Some models have specific generation and it always depends on torch (guard if importable via main module)
+    lambda name, content: "generation_" in name: ("torch",),
 }
 
 

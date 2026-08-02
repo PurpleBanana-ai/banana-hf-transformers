@@ -467,7 +467,7 @@ def my_convert_sync_batchnorm(module, process_group=None):
         module_output.bias = torch.nn.Parameter(module.bias)
         module_output.running_mean = module.running_mean
         module_output.running_var = module.running_var
-        module_output.num_batches_tracked = torch.tensor(0, dtype=torch.long, device=module.running_mean.device)
+        module_output.num_batches_tracked = torch.full((), 0, dtype=torch.long, device=module.running_mean.device)
     for name, child in module.named_children():
         module_output.add_module(name, my_convert_sync_batchnorm(child, process_group))
     del module
@@ -734,7 +734,7 @@ class LayoutLMv2Model(LayoutLMv2PreTrainedModel):
         if attention_mask is None:
             attention_mask = torch.ones(input_shape, device=device)
 
-        visual_attention_mask = torch.ones(visual_shape, device=device)
+        visual_attention_mask = torch.ones(visual_shape, dtype=attention_mask.dtype, device=device)
         final_attention_mask = torch.cat([attention_mask, visual_attention_mask], dim=1)
 
         if token_type_ids is None:

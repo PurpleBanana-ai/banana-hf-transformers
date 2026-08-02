@@ -54,6 +54,7 @@ limitations under the License.
         <a href="https://github.com/huggingface/transformers/blob/main/i18n/README_ur.md">اردو</a> |
         <a href="https://github.com/huggingface/transformers/blob/main/i18n/README_bn.md">বাংলা</a> |
         <a href="https://github.com/huggingface/transformers/blob/main/i18n/README_fa.md">فارسی</a> |
+        <a href="https://github.com/huggingface/transformers/blob/main/i18n/README_tr.md">Türkçe</a> |
     </p>
 </h4>
 
@@ -85,7 +86,7 @@ source .my-env/bin/activate
 uv venv .my-env
 source .my-env/bin/activate
 ```
-برای نصب این کتابخانه، به **Python 3.10+** و **PyTorch 2.4+** نیاز دارید. نصب می‌تواند از طریق `pip` یا `uv` انجام شود:
+برای نصب این کتابخانه، به **Python 3.10+** و **PyTorch 2.5+** نیاز دارید. نصب می‌تواند از طریق `pip` یا `uv` انجام شود:
 
 ```py
 # pip
